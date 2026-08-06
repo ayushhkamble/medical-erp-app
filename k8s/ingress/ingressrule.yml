@@ -1,35 +1,42 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  namespace: med-erp
   name: oneingress
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
+  namespace: med-erp
 spec:
   ingressClassName: nginx
   rules:
   - host: a80f4074b9d194f9b852f8075a0c52a9-1235726975.eu-north-1.elb.amazonaws.com
     http:
-      paths:  
-         -  path: /api/v1/users
-            pathType: Prefix
-            backend:
-              service: 
-                name: user-service
-                port:
-                  number: 8081
-         -  path: /api/v1/products
-            pathType: Prefix
-            backend:
-              service: 
-                name: product-service
-                port:
-                  number: 8082
-         -  path: /api/v1/orders
-            pathType: Prefix
-            backend:
-                service: 
-                  name: order-service
-                  port:
-                    number: 8083
-        
+      paths:
+      - path: /api/v1/auth
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8081
+
+      - path: /api/v1/users
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8081
+
+      - path: /api/v1/products
+        pathType: Prefix
+        backend:
+          service:
+            name: product-service
+            port:
+              number: 8082
+
+      - path: /api/v1/orders
+        pathType: Prefix
+        backend:
+          service:
+            name: order-service
+            port:
+              number: 8083
