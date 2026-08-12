@@ -32,7 +32,7 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: user-service
-          image: 368297257360.dkr.ecr.us-east-2.amazonaws.com/mwagh/user:latest
+          image: 716616997130.dkr.ecr.eu-north-1.amazonaws.com/medical-erp/user:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8081
