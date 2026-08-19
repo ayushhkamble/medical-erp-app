@@ -1,0 +1,143 @@
+// ============================================================================
+// BACKEND PIPELINE — user-service, product-service, order-service
+// Stages: Checkout -> Install deps (mvn build) -> Docker build/tag -> Push to
+//         ECR -> Deploy to EKS (kubectl)
+//
+// This repo has THREE backend microservices, not one. This pipeline loops
+// over all three at every stage so each gets built, pushed, and deployed
+// independently but from a single Jenkins job/run.
+//
+// Values below (AWS_ACCOUNT_ID, AWS_REGION, ECR repo names, image tags) match
+// what is CURRENTLY LIVE in k8s/deployments/*.yaml as of this writing:
+//   716616997130.dkr.ecr.eu-north-1.amazonaws.com/medical-erp/{user,products,order}:latest
+// NOTE: this does NOT match terraform/modules/ecr/main.tf, which provisions
+// repos named medical-erp/user-service, medical-erp/product-service,
+// medical-erp/order-service in us-east-1. See README "Known Infra Drift"
+// section before running this for the first time — pick ONE source of truth
+// and update either this file or the manifests/Terraform to match.
+//
+// Required Jenkins credentials (Manage Jenkins -> Credentials), exact IDs:
+//   aws-credentials  — AWS Credentials (Access key + secret), ECR push rights
+//   kubeconfig       — Secret file, kubeconfig for the target EKS cluster
+// ============================================================================
+
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION      = 'eu-north-1'
+        AWS_ACCOUNT_ID  = '716616997130'
+        ECR_REGISTRY    = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        K8S_NAMESPACE   = 'med-erp'
+        IMAGE_TAG       = "${env.GIT_COMMIT ? env.GIT_COMMIT.take(8) : "b${env.BUILD_NUMBER}"}"
+    }
+
+    options {
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install dependencies & build') {
+            steps {
+                sh '''
+                    set -e
+                    for svc in user-service product-service order-service; do
+                      echo "=== Building $svc ==="
+                      (cd "$svc" && mvn -B -q clean package -DskipTests=false)
+                    done
+                '''
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        stage('Docker build, tag & push to ECR') {
+            when { branch 'main' }
+            steps {
+                withCredentials([
+                    [$class: 'AmazonWebServicesCredentialsBinding',
+                     credentialsId: 'aws-credentials',
+                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']
+                ]) {
+                    sh '''
+                        set -e
+                        aws ecr get-login-password --region "$AWS_REGION" | \
+                          docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+                        # svc name -> ECR repo suffix (matches what's live in k8s/deployments/*.yaml)
+                        # Portable case-statement, not `declare -A`: many Jenkins agent images set
+                        # /bin/sh to dash (e.g. Alpine-based), which does not support bash arrays.
+                        repo_for() {
+                          case "$1" in
+                            user-service)    echo user ;;
+                            product-service) echo products ;;
+                            order-service)   echo order ;;
+                          esac
+                        }
+
+                        for svc in user-service product-service order-service; do
+                          repo="$(repo_for "$svc")"
+                          echo "=== $svc -> medical-erp/$repo ==="
+                          docker build -t "$ECR_REGISTRY/medical-erp/$repo:$IMAGE_TAG" \
+                                       -t "$ECR_REGISTRY/medical-erp/$repo:latest" "$svc/"
+                          docker push "$ECR_REGISTRY/medical-erp/$repo:$IMAGE_TAG"
+                          docker push "$ECR_REGISTRY/medical-erp/$repo:latest"
+                        done
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to EKS') {
+            when { branch 'main' }
+            steps {
+                withCredentials([
+                    file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')
+                ]) {
+                    sh '''
+                        set -e
+                        repo_for() {
+                          case "$1" in
+                            user-service)    echo user ;;
+                            product-service) echo products ;;
+                            order-service)   echo order ;;
+                          esac
+                        }
+
+                        for svc in user-service product-service order-service; do
+                          repo="$(repo_for "$svc")"
+                          kubectl set image "deployment/$svc" "$svc=$ECR_REGISTRY/medical-erp/$repo:$IMAGE_TAG" \
+                            -n "$K8S_NAMESPACE"
+                          kubectl rollout status "deployment/$svc" -n "$K8S_NAMESPACE" --timeout=5m
+                        done
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Backend deploy OK — tag ${IMAGE_TAG} live on all 3 services in ${K8S_NAMESPACE}."
+        }
+        failure {
+            echo "Backend pipeline failed — check the stage log above. A failed rollout will NOT auto-rollback; run 'kubectl rollout undo deployment/<svc> -n med-erp' manually if needed."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

@@ -1,0 +1,132 @@
+// ============================================================================
+// FRONTEND PIPELINE — Vite/React SPA, static hosting on S3 (+ CloudFront)
+// Stages: Checkout -> Install dependencies -> Build -> Deploy to S3
+//         (+ CloudFront invalidation)
+//
+// IMPORTANT — architecture note, read before wiring this into Jenkins:
+// The frontend is deployed as STATIC FILES to S3, matching
+// terraform/modules/s3-cloudfront/ and how you described this project.
+// It is NOT deployed as a container to the Kubernetes cluster. There is
+// deliberately no "docker build / push to ECR / kubectl deploy" stage here.
+//
+// frontend/Dockerfile + frontend/nginx.conf DO exist in this repo and build a
+// container that reverse-proxies /api/user, /api/product, /api/order to
+// in-cluster Service names (user-service:8081 etc.) — that image is meant to
+// run INSIDE the K8s cluster, but nothing in k8s/deployments/ or
+// k8s/services/ references it, and it is unused by this pipeline. If you
+// actually want the frontend running as a pod in EKS instead of on S3, say so
+// explicitly — that needs its own Deployment/Service/Ingress manifests added
+// to k8s/, a different Jenkinsfile shape (checkout -> install -> docker
+// build/tag -> push ECR -> kubectl deploy, same shape as the backend), and a
+// different VITE_*_URL build-time config (relative /api/... paths through the
+// in-pod nginx proxy, not the public ALB host below). Don't run both S3 and
+// K8s hosting for the same frontend — pick one, or you'll have two live
+// copies serving different builds behind different addresses.
+//
+// Required Jenkins credentials/config:
+//   aws-credentials     — AWS Credentials (Access key + secret), S3 + CloudFront rights
+//   Global env vars (Manage Jenkins -> System -> Global properties):
+//     S3_BUCKET_NAME              e.g. medical-erp-frontend-prod
+//     AWS_REGION                  e.g. eu-north-1 (must match your S3 bucket's region)
+//     API_BASE_URL                e.g. https://api.edublitzb2berp.online/api/v1
+//                                  (this is the ALB Ingress host from k8s/ingress/ingress.yaml)
+//     CLOUDFRONT_DISTRIBUTION_ID  optional — skips invalidation if unset
+// ============================================================================
+
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION     = "${env.AWS_REGION ?: 'eu-north-1'}"
+        S3_BUCKET_NAME = "${env.S3_BUCKET_NAME ?: 'medical-erp-frontend-prod'}"
+        API_BASE_URL   = "${env.API_BASE_URL ?: 'https://api.edublitzb2berp.online/api/v1'}"
+    }
+
+    options {
+        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        disableConcurrentBuilds()
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install dependencies') {
+            steps {
+                dir('frontend') {
+                    sh 'npm ci'
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                dir('frontend') {
+                    sh '''
+                        set -e
+                        npm run lint
+                        # These three point at the same ALB Ingress host — this app's Vite config
+                        # uses one API_BASE_URL per service today, all reachable via nginx's
+                        # /api/user, /api/product, /api/order rewrite paths when self-hosted, or
+                        # directly against the ALB paths in k8s/ingress/ingress.yaml when built
+                        # for S3 as done here.
+                        export VITE_USER_SERVICE_URL="$API_BASE_URL"
+                        export VITE_PRODUCT_SERVICE_URL="$API_BASE_URL"
+                        export VITE_ORDER_SERVICE_URL="$API_BASE_URL"
+                        npm run build
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to S3') {
+            when { branch 'main' }
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-credentials',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    dir('frontend') {
+                        sh '''
+                            set -e
+                            # Hashed assets: long cache, safe because filenames change on content change
+                            aws s3 sync dist/ "s3://${S3_BUCKET_NAME}/" --region "$AWS_REGION" --delete \
+                              --cache-control "public,max-age=31536000,immutable" --exclude "index.html"
+
+                            # index.html: never cache, so new deploys are visible immediately
+                            aws s3 cp dist/index.html "s3://${S3_BUCKET_NAME}/index.html" \
+                              --region "$AWS_REGION" \
+                              --cache-control "no-cache,no-store,must-revalidate" \
+                              --content-type "text/html"
+
+                            if [ -n "${CLOUDFRONT_DISTRIBUTION_ID:-}" ]; then
+                              aws cloudfront create-invalidation \
+                                --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+                                --paths "/*" >/dev/null
+                              echo "CloudFront invalidation submitted for distribution $CLOUDFRONT_DISTRIBUTION_ID"
+                            else
+                              echo "CLOUDFRONT_DISTRIBUTION_ID not set — skipping invalidation. If you're behind CloudFront, users may see stale assets for up to index.html's cache lifetime (should be none) or CloudFront's default TTL for other paths."
+                            fi
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Frontend deploy OK — synced to s3://${S3_BUCKET_NAME}."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
