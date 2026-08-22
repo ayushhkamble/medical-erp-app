@@ -65,7 +65,7 @@ module "eks" {
   vpc_id              = module.vpc.vpc_id
   vpc_cidr            = module.vpc.vpc_cidr
   private_subnet_ids  = module.vpc.private_subnet_ids
-  node_instance_types = ["m5.xlarge"]
+  node_instance_types = ["c7i-flex.large"]
   capacity_type       = "ON_DEMAND"
   node_desired_count  = 3
   node_min_count      = 2
@@ -76,6 +76,11 @@ module "eks" {
 
 module "ecr" {
   source  = "../../modules/ecr"
+    repositories = [
+    "med-erp/order",
+    "med-erp/product",
+    "med-erp/user"
+  ]
   project = local.project
   tags    = local.common_tags
 }
