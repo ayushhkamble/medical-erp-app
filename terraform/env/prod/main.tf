@@ -24,7 +24,7 @@ terraform {
   backend "s3" {
     bucket         = "med-erp-terraform-state-prod"
     key            = "prod/terraform.tfstate"
-    region         = "us-east-1"
+    region         = "eu-north-1"
     encrypt        = true
     dynamodb_table = "med-erp-terraform-locks"
   }
@@ -61,7 +61,7 @@ module "vpc" {
 module "eks" {
   source              = "../../modules/eks"
   cluster_name        = local.cluster_name
-  kubernetes_version  = "1.30"
+  kubernetes_version  = "1.35"
   vpc_id              = module.vpc.vpc_id
   vpc_cidr            = module.vpc.vpc_cidr
   private_subnet_ids  = module.vpc.private_subnet_ids
