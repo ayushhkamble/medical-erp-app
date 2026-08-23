@@ -19,7 +19,7 @@ metadata:
     # ValidationError: Certificate ARN 'arn:aws:acm:us-east-1:...' is not valid
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-2:728735520903:certificate/cab946fd-e687-4d91-9b95-04c0e07d7ff5
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-north-1:716616997130:certificate/e8713fc4-ce35-4d9c-a450-b29eeba55ad5
 
     # Health checks
     alb.ingress.kubernetes.io/healthcheck-path: /api/v1/actuator/health
@@ -31,7 +31,7 @@ metadata:
     # alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:...
 
     # Security groups
-    alb.ingress.kubernetes.io/security-groups: sg-0d08c1fb86b325ca3
+    alb.ingress.kubernetes.io/security-groups: sg-03521a10c2b61ab05
 
     # Tags
     alb.ingress.kubernetes.io/tags: "Environment=production,Project=med-erp"
