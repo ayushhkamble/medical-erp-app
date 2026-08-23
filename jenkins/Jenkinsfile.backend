@@ -47,6 +47,9 @@ pipeline {
         }
 
         stage('Install dependencies & build') {
+            tools {
+                jdk 'jdk-17'
+            }
             steps {
                 sh '''
                     set -e
